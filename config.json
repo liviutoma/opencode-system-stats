@@ -1,0 +1,8 @@
+{
+    "port": 9110,
+    "intervalMs": 2000,
+    "diskPath": "/",
+    "rows": ["cpu", "cputemp", "mem", "pwr", "gpu", "gputemp", "net", "disk"],
+    "history": 24,
+    "sparkWidth": 10
+}

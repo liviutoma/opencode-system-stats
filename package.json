@@ -1,0 +1,28 @@
+{
+    "name": "opencode-system-stats",
+    "version": "0.1.0",
+    "type": "module",
+    "description": "OpenCode TUI plugin: chip header plus live CPU, memory, power, GPU, temperature, network and disk sparklines in the session sidebar",
+    "license": "MIT",
+    "author": "Liviu Toma",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/liviutoma/opencode-system-stats.git"
+    },
+    "keywords": ["opencode", "plugin", "tui", "monitoring", "mactop", "macos"],
+    "scripts": {
+        "build": "esbuild src/tui.tsx --bundle --format=esm --platform=node --outfile=tui.js --external:solid-js --external:@opentui/solid --external:@opentui/solid/* --jsx=automatic --jsx-import-source=@opentui/solid --define:process.env.NODE_ENV='\"production\"' --log-level=warning",
+        "typecheck": "tsc -p tsconfig.json"
+    },
+    "dependencies": {
+        "@opentui/solid": "0.4.5",
+        "solid-js": "1.9.12"
+    },
+    "devDependencies": {
+        "@opencode/plugin": "2.0.4",
+        "@opencode/theme": "2.0.4",
+        "@types/node": "^25.5.0",
+        "esbuild": "0.28.1",
+        "typescript": "^6.0.2"
+    }
+}
