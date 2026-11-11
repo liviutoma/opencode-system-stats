@@ -74,12 +74,21 @@ TUI) once after installing/reloading before judging whether it renders.
 
 ```sh
 npm install --legacy-peer-deps      # peer conflict between @opencode/plugin and @opentui/solid
-npm run build                       # esbuild -> tui.js (solid-js and @opentui/solid stay external)
+npm run build                       # scripts/build.mjs: babel-preset-solid -> esbuild bundle
 npm run typecheck
 ```
 
 The host hot-reloads `tui.js`; no TUI restart needed after a rebuild. After rebuilding you can remove
 `node_modules` again.
+
+**Do not build with esbuild's own JSX transform.** `--jsx=automatic` emits runtime `jsx()` calls, and
+that runtime evaluates props eagerly: `when={ready()}`, `fg={color(...)}` and `{chip()}` become plain
+values computed once at element creation. The panel then renders a static snapshot — it looks like a
+sampler or repaint bug (values freeze until switching sessions), but the tree simply never re-runs.
+`scripts/build.mjs` instead runs the *same* transform the host uses for its own plugins —
+`babel-preset-solid` with `{ moduleName: "@opentui/solid", generate: "universal" }` — which turns
+dynamic expressions into getters, then esbuild bundles the result with `solid-js` and
+`@opentui/solid/*` kept external.
 
 ## Config
 

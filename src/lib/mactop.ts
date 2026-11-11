@@ -187,6 +187,43 @@ export class MactopSource {
         return { metrics, json }
     }
 
+    /**
+     * One-shot JSON snapshot: chip identity, cluster clocks and volume usage.
+     * The streaming child buffers its JSON so those extras can lag by tens of
+     * seconds (or never arrive when another instance owns the port and we
+     * adopted its metrics-only daemon). ~0.5 s CPU per call, so it is seeded
+     * once and refreshed rarely.
+     */
+    seedJson(): Promise<MactopJson | undefined> {
+        return new Promise((resolve) => {
+            const child = spawn("mactop", ["--headless", "--format", "json", "--count", "1"], {
+                stdio: ["ignore", "pipe", "ignore"],
+            })
+            let output = ""
+            const finish = (value: MactopJson | undefined) => {
+                child.kill()
+                resolve(value)
+            }
+            const timer = setTimeout(() => finish(undefined), 6000)
+            child.stdout?.on("data", (chunk: Buffer) => {
+                output += chunk.toString("utf8")
+            })
+            child.on("error", () => {
+                clearTimeout(timer)
+                finish(undefined)
+            })
+            child.on("close", () => {
+                clearTimeout(timer)
+                try {
+                    const parsed = JSON.parse(output) as MactopJson | MactopJson[]
+                    finish(Array.isArray(parsed) ? parsed[parsed.length - 1] : parsed)
+                } catch {
+                    finish(undefined)
+                }
+            })
+        })
+    }
+
     stop(): void {
         this.stopped = true
         const child = this.child

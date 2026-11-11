@@ -1,7 +1,17 @@
-// src/lib/board.tsx
-import { For, Show, onCleanup } from "solid-js";
+// .build/tui.js
+import { createComponent as _$createComponent2 } from "@opentui/solid";
 
-// src/lib/format.ts
+// .build/lib/board.js
+import { createTextNode as _$createTextNode } from "@opentui/solid";
+import { createComponent as _$createComponent } from "@opentui/solid";
+import { effect as _$effect } from "@opentui/solid";
+import { insertNode as _$insertNode } from "@opentui/solid";
+import { insert as _$insert } from "@opentui/solid";
+import { setProp as _$setProp } from "@opentui/solid";
+import { createElement as _$createElement } from "@opentui/solid";
+import { For, Show, createMemo, onCleanup } from "solid-js";
+
+// .build/lib/format.js
 var SPARK = ["\u2581", "\u2582", "\u2583", "\u2584", "\u2585", "\u2586", "\u2587", "\u2588"];
 function sparkline(values, width, scale = {}) {
   if (values.length === 0) return " ".repeat(width);
@@ -63,7 +73,7 @@ function bar(value, width) {
   return "\u2588".repeat(filled) + "\u2591".repeat(Math.max(0, width - filled));
 }
 
-// src/lib/theme.ts
+// .build/lib/theme.js
 function feedback(theme, kind) {
   const entry = theme.text.feedback?.[kind];
   return entry?.base ?? entry?.default;
@@ -81,8 +91,24 @@ function palette(theme) {
   };
 }
 
-// src/lib/board.tsx
-import { jsx, jsxs } from "@opentui/solid/jsx-runtime";
+// .build/lib/debug.js
+import { appendFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+function pluginRoot() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return existsSync(join(here, "config.json")) ? here : dirname(dirname(here));
+}
+function trace(message) {
+  try {
+    if (!existsSync(join(pluginRoot(), "debug.flag"))) return;
+    appendFileSync("/tmp/system-stats-heartbeat.log", `${(/* @__PURE__ */ new Date()).toISOString()} ${message}
+`);
+  } catch {
+  }
+}
+
+// .build/lib/board.js
 var LABELS = {
   cpu: "CPU",
   cputemp: "CPUTMP",
@@ -116,14 +142,16 @@ function heat(value, warn, critical) {
   if (value >= warn) return "warn";
   return "text";
 }
-function build(key, sample, config, sampler) {
+function line(row, sample, config, sampler) {
   const width = config.sparkWidth;
-  switch (key) {
+  switch (row) {
     case "cpu": {
       const value = sample?.cpu;
       return {
         label: LABELS.cpu,
-        spark: sparkline(sampler.history("cpu"), width, { max: 25 }),
+        spark: sparkline(sampler.history("cpu"), width, {
+          max: 25
+        }),
         value: percent(value),
         tone: heat(value, 70, 90),
         sparkTone: "accent"
@@ -133,7 +161,10 @@ function build(key, sample, config, sampler) {
       const value = sample?.cpuTemp;
       return {
         label: LABELS.cputemp,
-        spark: sparkline(sampler.history("cputemp"), width, { min: 30, max: 100 }),
+        spark: sparkline(sampler.history("cputemp"), width, {
+          min: 30,
+          max: 100
+        }),
         value: temperature(value),
         tone: heat(value, 80, 95),
         sparkTone: heat(value, 80, 95)
@@ -141,12 +172,12 @@ function build(key, sample, config, sampler) {
     }
     case "mem": {
       const value = sample?.memPct;
-      const used = gigabytes(sample?.memUsed);
-      const total = gigabytes(sample?.memTotal);
       return {
         label: LABELS.mem,
-        spark: sparkline(sampler.history("mem"), width, { max: 100 }),
-        value: `${percent(value)} ${used}/${total}`,
+        spark: sparkline(sampler.history("mem"), width, {
+          max: 100
+        }),
+        value: `${percent(value)} ${gigabytes(sample?.memUsed)}/${gigabytes(sample?.memTotal)}`,
         tone: heat(value, 80, 92),
         sparkTone: "ok"
       };
@@ -165,7 +196,10 @@ function build(key, sample, config, sampler) {
       const value = sample?.temp;
       return {
         label: LABELS.temp,
-        spark: sparkline(sampler.history("temp"), width, { min: 30, max: 95 }),
+        spark: sparkline(sampler.history("temp"), width, {
+          min: 30,
+          max: 95
+        }),
         value: temperature(value),
         tone: heat(value, 75, 90),
         sparkTone: heat(value, 75, 90)
@@ -175,7 +209,9 @@ function build(key, sample, config, sampler) {
       const value = sample?.gpu;
       return {
         label: LABELS.gpu,
-        spark: sparkline(sampler.history("gpu"), width, { max: 25 }),
+        spark: sparkline(sampler.history("gpu"), width, {
+          max: 25
+        }),
         value: percent(value),
         tone: heat(value, 85, 97),
         sparkTone: "accent"
@@ -185,7 +221,10 @@ function build(key, sample, config, sampler) {
       const value = sample?.gpuTemp;
       return {
         label: LABELS.gputemp,
-        spark: sparkline(sampler.history("gputemp"), width, { min: 30, max: 100 }),
+        spark: sparkline(sampler.history("gputemp"), width, {
+          min: 30,
+          max: 100
+        }),
         value: temperature(value),
         tone: heat(value, 85, 98),
         sparkTone: heat(value, 85, 98)
@@ -194,7 +233,9 @@ function build(key, sample, config, sampler) {
     case "net": {
       return {
         label: LABELS.net,
-        spark: sparkline(sampler.history("netIn"), width, { max: 2 * 1024 * 1024 }),
+        spark: sparkline(sampler.history("netIn"), width, {
+          max: 2 * 1024 * 1024
+        }),
         value: `\u2193${rate(sample?.netIn)} \u2191${rate(sample?.netOut)}`,
         tone: "text",
         sparkTone: "accent"
@@ -217,25 +258,55 @@ function clock(label, current, peak) {
   if (!peak || peak <= 0) return `${label} ${gigahertz(current)}G`;
   return `${label} ${gigahertz(current)}/${gigahertz(peak)}G`;
 }
+function Row(props) {
+  const colors = () => palette(props.theme);
+  const data = createMemo(() => {
+    props.sampler.tick();
+    return line(props.row, props.sampler.current(), props.config, props.sampler);
+  });
+  return (() => {
+    var _el$ = _$createElement("box"), _el$2 = _$createElement("text"), _el$3 = _$createElement("text"), _el$4 = _$createElement("text");
+    _$insertNode(_el$, _el$2);
+    _$insertNode(_el$, _el$3);
+    _$insertNode(_el$, _el$4);
+    _$setProp(_el$, "flexDirection", "row");
+    _$setProp(_el$, "gap", 1);
+    _$insert(_el$2, () => LABELS[props.row].padEnd(6));
+    _$insert(_el$3, () => data().spark);
+    _$insert(_el$4, () => data().value);
+    _$effect((_p$) => {
+      var _v$ = colors().muted, _v$2 = color(colors(), data().sparkTone), _v$3 = color(colors(), data().tone);
+      _v$ !== _p$.e && (_p$.e = _$setProp(_el$2, "fg", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp(_el$3, "fg", _v$2, _p$.t));
+      _v$3 !== _p$.a && (_p$.a = _$setProp(_el$4, "fg", _v$3, _p$.a));
+      return _p$;
+    }, {
+      e: void 0,
+      t: void 0,
+      a: void 0
+    });
+    return _el$;
+  })();
+}
 function StatsBoard(props) {
   const unsubscribe = props.sampler.subscribe();
   onCleanup(unsubscribe);
+  trace(`panel-mount id=${props.sampler.id}`);
+  let lastReady;
+  onCleanup(() => trace(`panel-unmount id=${props.sampler.id}`));
   const colors = () => palette(props.theme);
-  const sample = () => {
+  const ready = () => {
     props.sampler.tick();
-    return props.sampler.current();
-  };
-  const peaks = () => {
-    props.sampler.tick();
-    return props.sampler.peaks();
-  };
-  const lines = () => {
-    props.sampler.tick();
-    const current = props.sampler.current();
-    return props.config.rows.map((key) => build(key, current, props.config, props.sampler));
+    const has = props.sampler.current() !== void 0;
+    if (has !== lastReady) {
+      lastReady = has;
+      trace(`panel-ready id=${props.sampler.id} has=${has}`);
+    }
+    return has;
   };
   const chip = () => {
-    const system = sample()?.system;
+    props.sampler.tick();
+    const system = props.sampler.current()?.system;
     if (!system?.model) return "System";
     const parts = [system.model];
     if (system.cores) {
@@ -246,32 +317,83 @@ function StatsBoard(props) {
     return parts.join(" \xB7 ");
   };
   const clocks = () => {
-    const current = sample();
-    const top = peaks();
-    return [
-      clock("P", current?.freqP, top.p),
-      clock("S", current?.freqS, top.s),
-      clock("G", current?.freqG, top.g)
-    ].join(" ");
+    props.sampler.tick();
+    const current = props.sampler.current();
+    const peaks = props.sampler.peaks();
+    return [clock("P", current?.freqP, peaks.p), clock("S", current?.freqS, peaks.s), clock("G", current?.freqG, peaks.g)].join(" ");
   };
-  return /* @__PURE__ */ jsxs("box", { flexDirection: "column", gap: 0, children: [
-    /* @__PURE__ */ jsx("text", { fg: colors().primary, children: /* @__PURE__ */ jsx("b", { children: chip() }) }),
-    /* @__PURE__ */ jsx("text", { fg: colors().muted, children: clocks() }),
-    /* @__PURE__ */ jsxs(Show, { when: sample() !== void 0, fallback: /* @__PURE__ */ jsx("text", { fg: colors().muted, children: "measuring\u2026" }), children: [
-      /* @__PURE__ */ jsx(For, { each: lines(), children: (line) => /* @__PURE__ */ jsxs("box", { flexDirection: "row", gap: 1, children: [
-        /* @__PURE__ */ jsx("text", { fg: colors().muted, children: line.label.padEnd(6) }),
-        /* @__PURE__ */ jsx(Show, { when: line.spark, children: (spark) => /* @__PURE__ */ jsx("text", { fg: color(colors(), line.sparkTone), children: spark() }) }),
-        /* @__PURE__ */ jsx("text", { fg: color(colors(), line.tone), children: line.value })
-      ] }) }),
-      /* @__PURE__ */ jsx(Show, { when: sample()?.error, children: (error) => /* @__PURE__ */ jsx("text", { fg: colors().warning, children: error() }) })
-    ] })
-  ] });
+  const error = () => {
+    props.sampler.tick();
+    return props.sampler.current()?.error;
+  };
+  return (() => {
+    var _el$5 = _$createElement("box"), _el$6 = _$createElement("text"), _el$7 = _$createElement("b"), _el$8 = _$createElement("text");
+    _$insertNode(_el$5, _el$6);
+    _$insertNode(_el$5, _el$8);
+    _$setProp(_el$5, "flexDirection", "column");
+    _$setProp(_el$5, "gap", 0);
+    _$insertNode(_el$6, _el$7);
+    _$insert(_el$7, chip);
+    _$insert(_el$8, clocks);
+    _$insert(_el$5, _$createComponent(Show, {
+      get when() {
+        return ready();
+      },
+      get fallback() {
+        return (() => {
+          var _el$9 = _$createElement("text");
+          _$insertNode(_el$9, _$createTextNode(`measuring\u2026`));
+          _$effect((_$p) => _$setProp(_el$9, "fg", colors().muted, _$p));
+          return _el$9;
+        })();
+      },
+      get children() {
+        return [_$createComponent(For, {
+          get each() {
+            return props.config.rows;
+          },
+          children: (row) => _$createComponent(Row, {
+            row,
+            get theme() {
+              return props.theme;
+            },
+            get sampler() {
+              return props.sampler;
+            },
+            get config() {
+              return props.config;
+            }
+          })
+        }), _$createComponent(Show, {
+          get when() {
+            return error();
+          },
+          children: (message) => (() => {
+            var _el$1 = _$createElement("text");
+            _$insert(_el$1, message);
+            _$effect((_$p) => _$setProp(_el$1, "fg", colors().warning, _$p));
+            return _el$1;
+          })()
+        })];
+      }
+    }), null);
+    _$effect((_p$) => {
+      var _v$4 = colors().primary, _v$5 = colors().muted;
+      _v$4 !== _p$.e && (_p$.e = _$setProp(_el$6, "fg", _v$4, _p$.e));
+      _v$5 !== _p$.t && (_p$.t = _$setProp(_el$8, "fg", _v$5, _p$.t));
+      return _p$;
+    }, {
+      e: void 0,
+      t: void 0
+    });
+    return _el$5;
+  })();
 }
 
-// src/lib/config.ts
+// .build/lib/config.js
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname as dirname2, join as join2 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 var ROWS = ["cpu", "cputemp", "mem", "temp", "gpu", "gputemp", "pwr", "net", "disk"];
 var DEFAULTS = {
   port: 9110,
@@ -292,10 +414,10 @@ function rows(value, fallback) {
   return selected.length > 0 ? [...new Set(selected)] : fallback;
 }
 function readFileConfig() {
-  const here = dirname(fileURLToPath(import.meta.url));
-  for (const directory of [here, dirname(here), dirname(dirname(here))]) {
+  const here = dirname2(fileURLToPath2(import.meta.url));
+  for (const directory of [here, dirname2(here), dirname2(dirname2(here))]) {
     try {
-      return JSON.parse(readFileSync(join(directory, "config.json"), "utf8"));
+      return JSON.parse(readFileSync(join2(directory, "config.json"), "utf8"));
     } catch {
       continue;
     }
@@ -303,7 +425,10 @@ function readFileConfig() {
   return {};
 }
 function loadConfig(options) {
-  const merged = { ...readFileConfig(), ...options ?? {} };
+  const merged = {
+    ...readFileConfig(),
+    ...options ?? {}
+  };
   return {
     port: integer(merged.port, DEFAULTS.port, 1024, 65535),
     intervalMs: integer(merged.intervalMs, DEFAULTS.intervalMs, 500, 15e3),
@@ -314,26 +439,26 @@ function loadConfig(options) {
   };
 }
 
-// src/lib/sampler.ts
+// .build/lib/sampler.js
 import { statfsSync } from "node:fs";
 import { cpus, freemem, totalmem } from "node:os";
 import { createSignal } from "solid-js";
 
-// src/lib/mactop.ts
+// .build/lib/mactop.js
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join as join2 } from "node:path";
+import { existsSync as existsSync2 } from "node:fs";
+import { join as join3 } from "node:path";
 
-// src/lib/prom.ts
+// .build/lib/prom.js
 function parseMetrics(text) {
   const out = /* @__PURE__ */ new Map();
   for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const split = line.lastIndexOf(" ");
+    const line2 = raw.trim();
+    if (!line2 || line2.startsWith("#")) continue;
+    const split = line2.lastIndexOf(" ");
     if (split <= 0) continue;
-    const key = line.slice(0, split).trim();
-    const value = Number(line.slice(split + 1));
+    const key = line2.slice(0, split).trim();
+    const value = Number(line2.slice(split + 1));
     if (!Number.isFinite(value)) continue;
     out.set(key, value);
   }
@@ -349,15 +474,13 @@ function metric(metrics, name, labels) {
   for (const [key, value] of metrics) {
     if (!key.startsWith(prefix)) continue;
     if (!labels) return value;
-    const matches = Object.entries(labels).every(
-      ([label, wanted]) => key.includes(`${label}="${wanted}"`)
-    );
+    const matches = Object.entries(labels).every(([label, wanted]) => key.includes(`${label}="${wanted}"`));
     if (matches) return value;
   }
   return void 0;
 }
 
-// src/lib/mactop.ts
+// .build/lib/mactop.js
 var READY_TIMEOUT_MS = 4e3;
 var SCRAPE_TIMEOUT_MS = 1200;
 var MAX_BUFFER = 1e6;
@@ -368,7 +491,7 @@ function debug(...args) {
 function mactopAvailable() {
   const path = process.env.PATH ?? "";
   const separator = process.platform === "win32" ? ";" : ":";
-  return path.split(separator).filter((directory) => directory.length > 0).some((directory) => existsSync(join2(directory, "mactop")));
+  return path.split(separator).filter((directory) => directory.length > 0).some((directory) => existsSync2(join3(directory, "mactop")));
 }
 var JsonStream = class {
   buffer = "";
@@ -419,14 +542,8 @@ var JsonStream = class {
   }
 };
 var MactopSource = class {
-  intervalMs;
-  port;
-  child;
   stream = new JsonStream();
-  latest;
   missing = false;
-  failure;
-  launching;
   stopped = false;
   constructor(port, intervalMs) {
     this.port = port;
@@ -453,7 +570,46 @@ var MactopSource = class {
     }
     const json = this.latest;
     if (!metrics && !json) return void 0;
-    return { metrics, json };
+    return {
+      metrics,
+      json
+    };
+  }
+  /**
+   * One-shot JSON snapshot: chip identity, cluster clocks and volume usage.
+   * The streaming child buffers its JSON so those extras can lag by tens of
+   * seconds (or never arrive when another instance owns the port and we
+   * adopted its metrics-only daemon). ~0.5 s CPU per call, so it is seeded
+   * once and refreshed rarely.
+   */
+  seedJson() {
+    return new Promise((resolve) => {
+      const child = spawn("mactop", ["--headless", "--format", "json", "--count", "1"], {
+        stdio: ["ignore", "pipe", "ignore"]
+      });
+      let output = "";
+      const finish = (value) => {
+        child.kill();
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(void 0), 6e3);
+      child.stdout?.on("data", (chunk) => {
+        output += chunk.toString("utf8");
+      });
+      child.on("error", () => {
+        clearTimeout(timer);
+        finish(void 0);
+      });
+      child.on("close", () => {
+        clearTimeout(timer);
+        try {
+          const parsed = JSON.parse(output);
+          finish(Array.isArray(parsed) ? parsed[parsed.length - 1] : parsed);
+        } catch {
+          finish(void 0);
+        }
+      });
+    });
   }
   stop() {
     this.stopped = true;
@@ -482,10 +638,7 @@ var MactopSource = class {
     }
   }
   probe(port) {
-    return this.scrape(port).then(
-      (metrics) => metrics !== void 0,
-      () => false
-    );
+    return this.scrape(port).then((metrics) => metrics !== void 0, () => false);
   }
   async launch() {
     if (this.launching) {
@@ -520,7 +673,9 @@ var MactopSource = class {
         ["-p", `:${candidate}`, "--headless", "--format", "json", "--interval", String(this.intervalMs)],
         // stdout is the sample stream; stderr is only diagnostics. Never
         // leave stdout unread: mactop writes a JSON blob per interval.
-        { stdio: ["ignore", "pipe", "ignore"] }
+        {
+          stdio: ["ignore", "pipe", "ignore"]
+        }
       );
       let spawnError;
       child.on("error", (error) => {
@@ -540,7 +695,10 @@ var MactopSource = class {
       this.child = child;
       this.port = candidate;
       this.failure = void 0;
-      debug("mactop ready", { pid: child.pid, port: candidate });
+      debug("mactop ready", {
+        pid: child.pid,
+        port: candidate
+      });
       return;
     }
     if (fallback !== void 0) {
@@ -576,14 +734,19 @@ var MactopSource = class {
   }
 };
 
-// src/lib/sampler.ts
+// .build/lib/sampler.js
 var GIGABYTE = 1024 ** 3;
 var KILOBYTE = 1024;
 var positive = (value) => value !== void 0 && value > 0 ? value : void 0;
-function createSampler(config) {
+function createSampler(config, onSample) {
+  const id = Math.random().toString(36).slice(2, 8);
   const [tick, setTick] = createSignal(0);
   const history = /* @__PURE__ */ new Map();
-  const peaks = { p: 0, s: 0, g: 0 };
+  const peaks = {
+    p: 0,
+    s: 0,
+    g: 0
+  };
   const source = new MactopSource(config.port, Math.min(config.intervalMs, 1e3));
   let system;
   let current;
@@ -591,6 +754,8 @@ function createSampler(config) {
   let subscribers = 0;
   let sampling = false;
   let previousCpu;
+  let seed;
+  let seedTimer;
   let disposed = false;
   const record = (key, value) => {
     if (value === void 0 || !Number.isFinite(value)) return;
@@ -600,13 +765,16 @@ function createSampler(config) {
     history.set(key, series);
   };
   const cpuUsage = () => {
-    const totals = cpus().reduce(
-      (result, cpu) => {
-        const total2 = Object.values(cpu.times).reduce((sum, value) => sum + value, 0);
-        return { idle: result.idle + cpu.times.idle, total: result.total + total2 };
-      },
-      { idle: 0, total: 0 }
-    );
+    const totals = cpus().reduce((result, cpu) => {
+      const total2 = Object.values(cpu.times).reduce((sum, value) => sum + value, 0);
+      return {
+        idle: result.idle + cpu.times.idle,
+        total: result.total + total2
+      };
+    }, {
+      idle: 0,
+      total: 0
+    });
     const previous = previousCpu;
     previousCpu = totals;
     if (!previous) return void 0;
@@ -632,9 +800,7 @@ function createSampler(config) {
   const bootVolume = (data) => {
     const volumes = data.volumes ?? [];
     if (volumes.length === 0) return void 0;
-    return volumes.reduce(
-      (best, volume) => (volume.total_gb ?? 0) > (best.total_gb ?? 0) ? volume : best
-    );
+    return volumes.reduce((best, volume) => (volume.total_gb ?? 0) > (best.total_gb ?? 0) ? volume : best);
   };
   const temperatureGroup = (data, pattern) => {
     const groups = data.temperatures ?? [];
@@ -649,7 +815,11 @@ function createSampler(config) {
     if (freqP && freqP > peaks.p) peaks.p = freqP;
     if (freqS && freqS > peaks.s) peaks.s = freqS;
     if (freqG && freqG > peaks.g) peaks.g = freqG;
-    return { freqP, freqS, freqG };
+    return {
+      freqP,
+      freqS,
+      freqG
+    };
   };
   const remember = (data) => {
     const info = data.system_info;
@@ -696,16 +866,29 @@ function createSampler(config) {
     };
   };
   const fromMetrics = (metrics, json) => {
-    const memTotal = metric(metrics, "mactop_memory_gb", { type: "total" });
-    const memUsed = metric(metrics, "mactop_memory_gb", { type: "used" });
+    const memTotal = metric(metrics, "mactop_memory_gb", {
+      type: "total"
+    });
+    const memUsed = metric(metrics, "mactop_memory_gb", {
+      type: "used"
+    });
     const socTemp = positive(metric(metrics, "mactop_soc_temp_celsius"));
-    const netIn = metric(metrics, "mactop_network_kbytes_per_sec", { direction: "download" });
-    const netOut = metric(metrics, "mactop_network_kbytes_per_sec", { direction: "upload" });
-    const volume = json ? bootVolume(json) : void 0;
+    const netIn = metric(metrics, "mactop_network_kbytes_per_sec", {
+      direction: "download"
+    });
+    const netOut = metric(metrics, "mactop_network_kbytes_per_sec", {
+      direction: "upload"
+    });
+    const extras = json ?? seed;
+    const volume = extras ? bootVolume(extras) : void 0;
     return {
       at: Date.now(),
       cpu: positive(metric(metrics, "mactop_cpu_usage_percent")) ?? 0,
-      cpuTemp: positive(metric(metrics, "mactop_temp_sensor_celsius", { key: "TCDX" })) ?? positive(metric(metrics, "mactop_temp_sensor_celsius", { key: "TCHP" })) ?? socTemp,
+      cpuTemp: positive(metric(metrics, "mactop_temp_sensor_celsius", {
+        key: "TCDX"
+      })) ?? positive(metric(metrics, "mactop_temp_sensor_celsius", {
+        key: "TCHP"
+      })) ?? socTemp,
       memUsed: positive(memUsed),
       memTotal: positive(memTotal),
       memPct: memTotal && memUsed && memTotal > 0 ? memUsed / memTotal * 100 : void 0,
@@ -713,18 +896,22 @@ function createSampler(config) {
       temp: socTemp,
       gpu: positive(metric(metrics, "mactop_gpu_usage_percent")) ?? 0,
       gpuTemp: positive(metric(metrics, "mactop_gpu_temp_celsius")),
-      power: positive(metric(metrics, "mactop_power_watts", { component: "total" })),
+      power: positive(metric(metrics, "mactop_power_watts", {
+        component: "total"
+      })),
       netIn: netIn === void 0 ? void 0 : netIn * KILOBYTE,
       netOut: netOut === void 0 ? void 0 : netOut * KILOBYTE,
       // Clocks and chip identity only exist in the JSON stream, which
       // flushes in bursts — merge the newest object when we have it.
-      ...json ? trackPeaks(json) : { freqG: positive(metric(metrics, "mactop_gpu_freq_mhz")) },
+      ...extras ? trackPeaks(extras) : {
+        freqG: positive(metric(metrics, "mactop_gpu_freq_mhz"))
+      },
       ...volume && volume.total_gb ? {
         diskUsedPct: volume.used_percent,
         diskUsed: (volume.used_gb ?? 0) * 1e9,
         diskTotal: volume.total_gb * 1e9
       } : diskFallback(),
-      system: json ? remember(json) : system
+      system: extras ? remember(extras) : system
     };
   };
   const fromOs = (error) => {
@@ -754,12 +941,16 @@ function createSampler(config) {
     record("netOut", sample.netOut);
     record("disk", sample.diskUsedPct);
     setTick((value) => value + 1);
+    trace(`id=${id} pid=${process.pid} subs=${subscribers} cpu=${sample.cpu?.toFixed(1)} mem=${sample.memPct?.toFixed(1)} temp=${sample.cpuTemp?.toFixed(1)} pwr=${sample.power?.toFixed(1)} err=${sample.error ?? "-"}`);
+    onSample?.();
   };
   const sampleOnce = async () => {
     if (sampling || disposed) return;
     sampling = true;
     try {
+      trace(`id=${id} pid=${process.pid} sampling subs=${subscribers} port=${config.port}`);
       const snapshot = await source.sample();
+      trace(`id=${id} snapshot=${snapshot ? Object.keys(snapshot).join("+") : "none"} sourceError=${source.error ?? "-"}`);
       if (!snapshot) {
         commit(fromOs(source.error));
         return;
@@ -771,14 +962,23 @@ function createSampler(config) {
       sampling = false;
     }
   };
+  const refreshSeed = () => {
+    void source.seedJson().then((data) => {
+      if (data) seed = data;
+    });
+  };
   const start = () => {
     if (timer || disposed) return;
+    refreshSeed();
+    seedTimer = setInterval(refreshSeed, 6e4);
     void sampleOnce();
     timer = setInterval(() => void sampleOnce(), config.intervalMs);
   };
   const stop = () => {
     if (timer) clearInterval(timer);
+    if (seedTimer) clearInterval(seedTimer);
     timer = void 0;
+    seedTimer = void 0;
   };
   const subscribe = () => {
     subscribers += 1;
@@ -792,6 +992,7 @@ function createSampler(config) {
     };
   };
   return {
+    id,
     tick,
     current: () => current,
     history: (key) => history.get(key) ?? [],
@@ -807,16 +1008,21 @@ function createSampler(config) {
   };
 }
 
-// src/tui.tsx
-import { jsx as jsx2 } from "@opentui/solid/jsx-runtime";
+// .build/tui.js
 var tui_default = {
   id: "local.system-stats",
   setup(ctx) {
     const config = loadConfig(ctx.options);
-    const sampler = createSampler(config);
+    const sampler = createSampler(config, () => ctx.renderer.requestRender());
     ctx.ui.slot({
       append: "sidebar.content",
-      render: () => /* @__PURE__ */ jsx2(StatsBoard, { theme: ctx.theme, sampler, config })
+      render: () => _$createComponent2(StatsBoard, {
+        get theme() {
+          return ctx.theme;
+        },
+        sampler,
+        config
+      })
     });
     return () => sampler.dispose();
   }

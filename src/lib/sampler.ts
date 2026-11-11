@@ -7,6 +7,7 @@
  */
 
 import { statfsSync } from "node:fs"
+import { trace } from "./debug"
 import { cpus, freemem, totalmem } from "node:os"
 import { createSignal } from "solid-js"
 import { MactopSource, type MactopJson } from "./mactop"
@@ -68,7 +69,10 @@ const KILOBYTE = 1024
 
 const positive = (value: number | undefined) => (value !== undefined && value > 0 ? value : undefined)
 
-export function createSampler(config: Config) {
+export function createSampler(config: Config, onSample?: () => void) {
+    // Distinguishes sampler instances in traces: several can exist if setup()
+    // runs more than once or a hot reload leaves an old claim behind.
+    const id = Math.random().toString(36).slice(2, 8)
     const [tick, setTick] = createSignal(0)
     const history = new Map<HistoryKey, number[]>()
     const peaks: Peaks = { p: 0, s: 0, g: 0 }
@@ -81,6 +85,8 @@ export function createSampler(config: Config) {
     let subscribers = 0
     let sampling = false
     let previousCpu: CpuTimes | undefined
+    let seed: MactopJson | undefined
+    let seedTimer: ReturnType<typeof setInterval> | undefined
     let disposed = false
 
     const record = (key: HistoryKey, value: number | undefined) => {
@@ -206,7 +212,8 @@ export function createSampler(config: Config) {
         const socTemp = positive(metric(metrics, "mactop_soc_temp_celsius"))
         const netIn = metric(metrics, "mactop_network_kbytes_per_sec", { direction: "download" })
         const netOut = metric(metrics, "mactop_network_kbytes_per_sec", { direction: "upload" })
-        const volume = json ? bootVolume(json) : undefined
+        const extras = json ?? seed
+        const volume = extras ? bootVolume(extras) : undefined
         return {
             at: Date.now(),
             cpu: positive(metric(metrics, "mactop_cpu_usage_percent")) ?? 0,
@@ -226,7 +233,7 @@ export function createSampler(config: Config) {
             netOut: netOut === undefined ? undefined : netOut * KILOBYTE,
             // Clocks and chip identity only exist in the JSON stream, which
             // flushes in bursts — merge the newest object when we have it.
-            ...(json ? trackPeaks(json) : { freqG: positive(metric(metrics, "mactop_gpu_freq_mhz")) }),
+            ...(extras ? trackPeaks(extras) : { freqG: positive(metric(metrics, "mactop_gpu_freq_mhz")) }),
             ...(volume && volume.total_gb
                 ? {
                       diskUsedPct: volume.used_percent,
@@ -234,7 +241,7 @@ export function createSampler(config: Config) {
                       diskTotal: volume.total_gb * 1e9,
                   }
                 : diskFallback()),
-            system: json ? remember(json) : system,
+            system: extras ? remember(extras) : system,
         }
     }
 
@@ -266,13 +273,22 @@ export function createSampler(config: Config) {
         record("netOut", sample.netOut)
         record("disk", sample.diskUsedPct)
         setTick((value) => value + 1)
+        // Solid has already flushed the bound text by now; opentui still needs
+        // an explicit repaint request or a timer-driven update stays invisible
+        // until some input (session switch, keystroke) redraws the screen.
+        trace(
+            `id=${id} pid=${process.pid} subs=${subscribers} cpu=${sample.cpu?.toFixed(1)} mem=${sample.memPct?.toFixed(1)} temp=${sample.cpuTemp?.toFixed(1)} pwr=${sample.power?.toFixed(1)} err=${sample.error ?? "-"}`,
+        )
+        onSample?.()
     }
 
     const sampleOnce = async () => {
         if (sampling || disposed) return
         sampling = true
         try {
+            trace(`id=${id} pid=${process.pid} sampling subs=${subscribers} port=${config.port}`)
             const snapshot = await source.sample()
+            trace(`id=${id} snapshot=${snapshot ? Object.keys(snapshot).join("+") : "none"} sourceError=${source.error ?? "-"}`)
             if (!snapshot) {
                 commit(fromOs(source.error))
                 return
@@ -289,15 +305,25 @@ export function createSampler(config: Config) {
         }
     }
 
+    const refreshSeed = () => {
+        void source.seedJson().then((data) => {
+            if (data) seed = data
+        })
+    }
+
     const start = () => {
         if (timer || disposed) return
+        refreshSeed()
+        seedTimer = setInterval(refreshSeed, 60_000)
         void sampleOnce()
         timer = setInterval(() => void sampleOnce(), config.intervalMs)
     }
 
     const stop = () => {
         if (timer) clearInterval(timer)
+        if (seedTimer) clearInterval(seedTimer)
         timer = undefined
+        seedTimer = undefined
     }
 
     const subscribe = () => {
@@ -313,6 +339,7 @@ export function createSampler(config: Config) {
     }
 
     return {
+        id,
         tick,
         current: () => current,
         history: (key: HistoryKey) => history.get(key) ?? [],

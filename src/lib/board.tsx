@@ -1,16 +1,17 @@
 /** @jsxImportSource @opentui/solid */
-import { For, Show, onCleanup } from "solid-js"
+import { For, Show, createMemo, onCleanup } from "solid-js"
 import type { ResolvedTheme } from "@opencode/theme/tui"
 import type { Config, Row } from "./config"
-import type { Peaks, Sampler, Sample } from "./sampler"
+import type { Sampler, Sample } from "./sampler"
 import { bar, bytes, gigahertz, gigabytes, percent, rate, sparkline, temperature, watts } from "./format"
 import { palette, type Palette } from "./theme"
+import { trace } from "./debug"
 
 type Tone = "text" | "muted" | "warn" | "error" | "ok" | "accent"
 
 type Line = {
     readonly label: string
-    readonly spark?: string
+    readonly spark: string
     readonly value: string
     readonly tone: Tone
     readonly sparkTone: Tone
@@ -52,9 +53,9 @@ function heat(value: number | undefined, warn: number, critical: number): Tone {
     return "text"
 }
 
-function build(key: Row, sample: Sample | undefined, config: Config, sampler: Sampler): Line {
+function line(row: Row, sample: Sample | undefined, config: Config, sampler: Sampler): Line {
     const width = config.sparkWidth
-    switch (key) {
+    switch (row) {
         case "cpu": {
             const value = sample?.cpu
             return {
@@ -77,12 +78,10 @@ function build(key: Row, sample: Sample | undefined, config: Config, sampler: Sa
         }
         case "mem": {
             const value = sample?.memPct
-            const used = gigabytes(sample?.memUsed)
-            const total = gigabytes(sample?.memTotal)
             return {
                 label: LABELS.mem,
                 spark: sparkline(sampler.history("mem"), width, { max: 100 }),
-                value: `${percent(value)} ${used}/${total}`,
+                value: `${percent(value)} ${gigabytes(sample?.memUsed)}/${gigabytes(sample?.memTotal)}`,
                 tone: heat(value, 80, 92),
                 sparkTone: "ok",
             }
@@ -155,28 +154,46 @@ function clock(label: string, current: number | undefined, peak: number): string
     return `${label} ${gigahertz(current)}/${gigahertz(peak)}G`
 }
 
+/**
+ * One row. The element tree is created once and only its text content is
+ * rebound — recreating rows per tick (new `For` items) left the sidebar's
+ * scrollbox showing stale frames, while stable elements update fine.
+ */
+function Row(props: { row: Row; theme: ResolvedTheme; sampler: Sampler; config: Config }) {
+    const colors = () => palette(props.theme)
+    const data = createMemo(() => {
+        props.sampler.tick()
+        return line(props.row, props.sampler.current(), props.config, props.sampler)
+    })
+    return (
+        <box flexDirection="row" gap={1}>
+            <text fg={colors().muted}>{LABELS[props.row].padEnd(6)}</text>
+            <text fg={color(colors(), data().sparkTone)}>{data().spark}</text>
+            <text fg={color(colors(), data().tone)}>{data().value}</text>
+        </box>
+    )
+}
+
 export function StatsBoard(props: { theme: ResolvedTheme; sampler: Sampler; config: Config }) {
     const unsubscribe = props.sampler.subscribe()
     onCleanup(unsubscribe)
+    trace(`panel-mount id=${props.sampler.id}`)
+    let lastReady: boolean | undefined
+    onCleanup(() => trace(`panel-unmount id=${props.sampler.id}`))
 
     const colors = () => palette(props.theme)
-    // Reading the tick signal inside an expression keeps the board reactive
-    // without copying sampler state into component-local signals.
-    const sample = (): Sample | undefined => {
+    const ready = () => {
         props.sampler.tick()
-        return props.sampler.current()
-    }
-    const peaks = (): Peaks => {
-        props.sampler.tick()
-        return props.sampler.peaks()
-    }
-    const lines = (): Line[] => {
-        props.sampler.tick()
-        const current = props.sampler.current()
-        return props.config.rows.map((key) => build(key, current, props.config, props.sampler))
+        const has = props.sampler.current() !== undefined
+        if (has !== lastReady) {
+            lastReady = has
+            trace(`panel-ready id=${props.sampler.id} has=${has}`)
+        }
+        return has
     }
     const chip = () => {
-        const system = sample()?.system
+        props.sampler.tick()
+        const system = props.sampler.current()?.system
         if (!system?.model) return "System"
         const parts: string[] = [system.model]
         if (system.cores) {
@@ -187,13 +204,18 @@ export function StatsBoard(props: { theme: ResolvedTheme; sampler: Sampler; conf
         return parts.join(" · ")
     }
     const clocks = () => {
-        const current = sample()
-        const top = peaks()
+        props.sampler.tick()
+        const current = props.sampler.current()
+        const peaks = props.sampler.peaks()
         return [
-            clock("P", current?.freqP, top.p),
-            clock("S", current?.freqS, top.s),
-            clock("G", current?.freqG, top.g),
+            clock("P", current?.freqP, peaks.p),
+            clock("S", current?.freqS, peaks.s),
+            clock("G", current?.freqG, peaks.g),
         ].join(" ")
+    }
+    const error = () => {
+        props.sampler.tick()
+        return props.sampler.current()?.error
     }
 
     return (
@@ -202,19 +224,11 @@ export function StatsBoard(props: { theme: ResolvedTheme; sampler: Sampler; conf
                 <b>{chip()}</b>
             </text>
             <text fg={colors().muted}>{clocks()}</text>
-            <Show when={sample() !== undefined} fallback={<text fg={colors().muted}>measuring…</text>}>
-                <For each={lines()}>
-                    {(line) => (
-                        <box flexDirection="row" gap={1}>
-                            <text fg={colors().muted}>{line.label.padEnd(6)}</text>
-                            <Show when={line.spark}>
-                                {(spark) => <text fg={color(colors(), line.sparkTone)}>{spark()}</text>}
-                            </Show>
-                            <text fg={color(colors(), line.tone)}>{line.value}</text>
-                        </box>
-                    )}
+            <Show when={ready()} fallback={<text fg={colors().muted}>measuring…</text>}>
+                <For each={props.config.rows}>
+                    {(row) => <Row row={row} theme={props.theme} sampler={props.sampler} config={props.config} />}
                 </For>
-                <Show when={sample()?.error}>{(error) => <text fg={colors().warning}>{error()}</text>}</Show>
+                <Show when={error()}>{(message) => <text fg={colors().warning}>{message()}</text>}</Show>
             </Show>
         </box>
     )

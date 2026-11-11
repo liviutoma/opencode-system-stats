@@ -13,7 +13,9 @@ export default {
     id: "local.system-stats",
     setup(ctx: Plugin.Context) {
         const config = loadConfig(ctx.options)
-        const sampler = createSampler(config)
+        // Repaint explicitly: timer-driven updates otherwise stay invisible
+        // until the next input event redraws the TUI.
+        const sampler = createSampler(config, () => ctx.renderer.requestRender())
         ctx.ui.slot({
             append: "sidebar.content",
             render: () => <StatsBoard theme={ctx.theme} sampler={sampler} config={config} />,
