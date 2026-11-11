@@ -145,12 +145,42 @@ export class JsonStream {
     }
 }
 
+/**
+ * Children outlive the module instance that spawned them when the host crashes
+ * or skips plugin cleanup on reload, so the registry lives on `globalThis` and
+ * a single `exit` hook reaps whatever is still tracked.
+ */
+const registrySymbol = Symbol.for("opencode.system-stats.children")
+const reaperSymbol = Symbol.for("opencode.system-stats.reaper")
+const globalState = globalThis as unknown as Record<symbol, unknown>
+const registry = (globalState[registrySymbol] ??= new Set<ChildProcess>()) as Set<ChildProcess>
+if (!globalState[reaperSymbol]) {
+    globalState[reaperSymbol] = true
+    process.once("exit", () => {
+        for (const child of registry) {
+            try {
+                child.kill()
+            } catch {
+                // already gone
+            }
+        }
+    })
+}
+
+function track(child: ChildProcess): void {
+    registry.add(child)
+    child.once("exit", () => registry.delete(child))
+}
+
 export class MactopSource {
     readonly intervalMs: number
     private port: number
     private child: ChildProcess | undefined
+    private seedChild: ChildProcess | undefined
     private stream = new JsonStream()
     private latest: MactopJson | undefined
+    private latestAt = 0
+    private generation = 0
     private missing = false
     private failure: string | undefined
     private launching: Promise<void> | undefined
@@ -166,9 +196,10 @@ export class MactopSource {
         return this.failure
     }
 
-    /** Latest parsed JSON object (bursty: mactop buffers stdout). */
+    /** Latest parsed JSON object, dropped once it is clearly stale. */
     latestJson(): MactopJson | undefined {
-        return this.latest
+        if (!this.latestAt) return undefined
+        return Date.now() - this.latestAt <= Math.max(3 * this.intervalMs, 5000) ? this.latest : undefined
     }
 
     /**
@@ -182,7 +213,9 @@ export class MactopSource {
             await this.launch()
             metrics = await this.scrape()
         }
-        const json = this.latest
+        // A dead daemon leaves its last object behind; refusing to serve it
+        // keeps frozen CPU/memory/net numbers from masquerading as live ones.
+        const json = this.latestJson()
         if (!metrics && !json) return undefined
         return { metrics, json }
     }
@@ -195,15 +228,21 @@ export class MactopSource {
      * once and refreshed rarely.
      */
     seedJson(): Promise<MactopJson | undefined> {
+        if (this.stopped || !mactopAvailable()) return Promise.resolve(undefined)
         return new Promise((resolve) => {
             const child = spawn("mactop", ["--headless", "--format", "json", "--count", "1"], {
                 stdio: ["ignore", "pipe", "ignore"],
             })
+            this.seedChild = child
+            track(child)
             let output = ""
             const finish = (value: MactopJson | undefined) => {
+                if (this.seedChild === child) this.seedChild = undefined
                 child.kill()
                 resolve(value)
             }
+            // An unhandled stream 'error' event would throw in the host process.
+            child.stdout?.on("error", () => {})
             const timer = setTimeout(() => finish(undefined), 6000)
             child.stdout?.on("data", (chunk: Buffer) => {
                 output += chunk.toString("utf8")
@@ -230,9 +269,16 @@ export class MactopSource {
         this.child = undefined
         if (child) {
             debug("stopping mactop", child.pid)
+            child.stdout?.destroy()
             child.kill()
         } else {
             debug("stop called with no tracked child")
+        }
+        const seed = this.seedChild
+        this.seedChild = undefined
+        if (seed) {
+            seed.stdout?.destroy()
+            seed.kill()
         }
     }
 
@@ -281,7 +327,7 @@ export class MactopSource {
         }
         const base = this.port
         let fallback: number | undefined
-        for (let candidate = base; candidate < base + 5; candidate++) {
+        for (let candidate = base; candidate <= Math.min(base + 4, 65535); candidate++) {
             if (await this.probe(candidate)) {
                 // Someone else's mactop (menubar/overlay instance) owns this
                 // port: it serves /metrics but not our JSON stream. Give a
@@ -295,6 +341,13 @@ export class MactopSource {
                     continue
                 }
             }
+            // A new generation gets a clean scanner: a torn object left by a
+            // killed child would otherwise unbalance the brace counter forever.
+            const generation = ++this.generation
+            this.stream = new JsonStream()
+            this.latest = undefined
+            this.latestAt = 0
+            const startedAt = Date.now()
             const child = spawn(
                 "mactop",
                 ["-p", `:${candidate}`, "--headless", "--format", "json", "--interval", String(this.intervalMs)],
@@ -302,6 +355,7 @@ export class MactopSource {
                 // leave stdout unread: mactop writes a JSON blob per interval.
                 { stdio: ["ignore", "pipe", "ignore"] },
             )
+            track(child)
             let spawnError: Error | undefined
             child.on("error", (error) => {
                 spawnError = error
@@ -309,8 +363,8 @@ export class MactopSource {
             child.on("exit", () => {
                 if (this.child === child) this.child = undefined
             })
-            this.attachStream(child)
-            const ready = await this.waitForReady(candidate, () => spawnError)
+            this.attachStream(child, generation)
+            const ready = await this.waitForReady(candidate, () => spawnError, startedAt)
             if (!ready) {
                 debug("mactop not ready on port", candidate, spawnError?.message)
                 child.kill()
@@ -332,16 +386,19 @@ export class MactopSource {
         this.failure = "mactop failed to start"
     }
 
-    private attachStream(child: ChildProcess) {
+    private attachStream(child: ChildProcess, generation: number) {
         child.stdout?.setEncoding("utf8")
+        child.stdout?.on("error", () => {})
         child.stdout?.on("data", (chunk: string) => {
+            if (generation !== this.generation) return
             for (const parsed of this.stream.push(chunk)) {
                 this.latest = parsed as MactopJson
+                this.latestAt = Date.now()
             }
         })
     }
 
-    private async waitForReady(port: number, spawnError: () => Error | undefined): Promise<boolean> {
+    private async waitForReady(port: number, spawnError: () => Error | undefined, startedAt: number): Promise<boolean> {
         const deadline = Date.now() + READY_TIMEOUT_MS
         while (Date.now() < deadline) {
             if (this.stopped) return false
@@ -350,7 +407,9 @@ export class MactopSource {
                 this.missing = true
                 return false
             }
-            if (this.latest) return true
+            // Only data written after this spawn counts as readiness: a stale
+            // object from a previous generation would mark a dead child ready.
+            if (this.latest && this.latestAt >= startedAt) return true
             // A pre-existing mactop on this port has no stream of ours; accept
             // the endpoint so the fallback still has data.
             if (await this.probe(port)) return true

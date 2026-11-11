@@ -92,18 +92,40 @@ function palette(theme) {
 }
 
 // .build/lib/debug.js
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFile, existsSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+var LOG = join(tmpdir(), "system-stats-heartbeat.log");
+var ROTATE_AT = 1e6;
+var RECHECK_MS = 3e4;
+var checkedAt = 0;
+var enabled = false;
+var written = 0;
 function pluginRoot() {
   const here = dirname(fileURLToPath(import.meta.url));
   return existsSync(join(here, "config.json")) ? here : dirname(dirname(here));
 }
+function tracing() {
+  const now = Date.now();
+  if (now - checkedAt >= RECHECK_MS) {
+    checkedAt = now;
+    enabled = existsSync(join(pluginRoot(), "debug.flag"));
+  }
+  return enabled;
+}
 function trace(message) {
+  if (!tracing()) return;
+  const line2 = `${(/* @__PURE__ */ new Date()).toISOString()} ${message}
+`;
   try {
-    if (!existsSync(join(pluginRoot(), "debug.flag"))) return;
-    appendFileSync("/tmp/system-stats-heartbeat.log", `${(/* @__PURE__ */ new Date()).toISOString()} ${message}
-`);
+    written += line2.length;
+    if (written > ROTATE_AT) {
+      written = 0;
+      writeFileSync(LOG, "");
+    }
+    appendFile(LOG, line2, () => {
+    });
   } catch {
   }
 }
@@ -348,7 +370,7 @@ function StatsBoard(props) {
         })();
       },
       get children() {
-        return [_$createComponent(For, {
+        return _$createComponent(For, {
           get each() {
             return props.config.rows;
           },
@@ -364,18 +386,19 @@ function StatsBoard(props) {
               return props.config;
             }
           })
-        }), _$createComponent(Show, {
-          get when() {
-            return error();
-          },
-          children: (message) => (() => {
-            var _el$1 = _$createElement("text");
-            _$insert(_el$1, message);
-            _$effect((_$p) => _$setProp(_el$1, "fg", colors().warning, _$p));
-            return _el$1;
-          })()
-        })];
+        });
       }
+    }), null);
+    _$insert(_el$5, _$createComponent(Show, {
+      get when() {
+        return error();
+      },
+      children: (message) => (() => {
+        var _el$1 = _$createElement("text");
+        _$insert(_el$1, message);
+        _$effect((_$p) => _$setProp(_el$1, "fg", colors().warning, _$p));
+        return _el$1;
+      })()
     }), null);
     _$effect((_p$) => {
       var _v$4 = colors().primary, _v$5 = colors().muted;
@@ -392,7 +415,7 @@ function StatsBoard(props) {
 
 // .build/lib/config.js
 import { readFileSync } from "node:fs";
-import { dirname as dirname2, join as join2 } from "node:path";
+import { basename, dirname as dirname2, join as join2 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 var ROWS = ["cpu", "cputemp", "mem", "temp", "gpu", "gputemp", "pwr", "net", "disk"];
 var DEFAULTS = {
@@ -415,9 +438,13 @@ function rows(value, fallback) {
 }
 function readFileConfig() {
   const here = dirname2(fileURLToPath2(import.meta.url));
-  for (const directory of [here, dirname2(here), dirname2(dirname2(here))]) {
+  const directories = basename(here) === "lib" ? [here, dirname2(here), dirname2(dirname2(here))] : [here];
+  for (const directory of directories) {
     try {
-      return JSON.parse(readFileSync(join2(directory, "config.json"), "utf8"));
+      const parsed = JSON.parse(readFileSync(join2(directory, "config.json"), "utf8"));
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        return parsed;
+      }
     } catch {
       continue;
     }
@@ -541,8 +568,29 @@ var JsonStream = class {
     return -1;
   }
 };
+var registrySymbol = /* @__PURE__ */ Symbol.for("opencode.system-stats.children");
+var reaperSymbol = /* @__PURE__ */ Symbol.for("opencode.system-stats.reaper");
+var globalState = globalThis;
+var registry = globalState[registrySymbol] ??= /* @__PURE__ */ new Set();
+if (!globalState[reaperSymbol]) {
+  globalState[reaperSymbol] = true;
+  process.once("exit", () => {
+    for (const child of registry) {
+      try {
+        child.kill();
+      } catch {
+      }
+    }
+  });
+}
+function track(child) {
+  registry.add(child);
+  child.once("exit", () => registry.delete(child));
+}
 var MactopSource = class {
   stream = new JsonStream();
+  latestAt = 0;
+  generation = 0;
   missing = false;
   stopped = false;
   constructor(port, intervalMs) {
@@ -553,9 +601,10 @@ var MactopSource = class {
     if (this.missing) return "mactop not installed";
     return this.failure;
   }
-  /** Latest parsed JSON object (bursty: mactop buffers stdout). */
+  /** Latest parsed JSON object, dropped once it is clearly stale. */
   latestJson() {
-    return this.latest;
+    if (!this.latestAt) return void 0;
+    return Date.now() - this.latestAt <= Math.max(3 * this.intervalMs, 5e3) ? this.latest : void 0;
   }
   /**
    * Scrapes `/metrics` for the live rows and returns the newest JSON object
@@ -568,7 +617,7 @@ var MactopSource = class {
       await this.launch();
       metrics = await this.scrape();
     }
-    const json = this.latest;
+    const json = this.latestJson();
     if (!metrics && !json) return void 0;
     return {
       metrics,
@@ -583,15 +632,21 @@ var MactopSource = class {
    * once and refreshed rarely.
    */
   seedJson() {
+    if (this.stopped || !mactopAvailable()) return Promise.resolve(void 0);
     return new Promise((resolve) => {
       const child = spawn("mactop", ["--headless", "--format", "json", "--count", "1"], {
         stdio: ["ignore", "pipe", "ignore"]
       });
+      this.seedChild = child;
+      track(child);
       let output = "";
       const finish = (value) => {
+        if (this.seedChild === child) this.seedChild = void 0;
         child.kill();
         resolve(value);
       };
+      child.stdout?.on("error", () => {
+      });
       const timer = setTimeout(() => finish(void 0), 6e3);
       child.stdout?.on("data", (chunk) => {
         output += chunk.toString("utf8");
@@ -617,9 +672,16 @@ var MactopSource = class {
     this.child = void 0;
     if (child) {
       debug("stopping mactop", child.pid);
+      child.stdout?.destroy();
       child.kill();
     } else {
       debug("stop called with no tracked child");
+    }
+    const seed = this.seedChild;
+    this.seedChild = void 0;
+    if (seed) {
+      seed.stdout?.destroy();
+      seed.kill();
     }
   }
   url(port = this.port) {
@@ -659,7 +721,7 @@ var MactopSource = class {
     }
     const base = this.port;
     let fallback;
-    for (let candidate = base; candidate < base + 5; candidate++) {
+    for (let candidate = base; candidate <= Math.min(base + 4, 65535); candidate++) {
       if (await this.probe(candidate)) {
         await sleep(500);
         if (!await this.probe(candidate)) {
@@ -668,6 +730,11 @@ var MactopSource = class {
           continue;
         }
       }
+      const generation = ++this.generation;
+      this.stream = new JsonStream();
+      this.latest = void 0;
+      this.latestAt = 0;
+      const startedAt = Date.now();
       const child = spawn(
         "mactop",
         ["-p", `:${candidate}`, "--headless", "--format", "json", "--interval", String(this.intervalMs)],
@@ -677,6 +744,7 @@ var MactopSource = class {
           stdio: ["ignore", "pipe", "ignore"]
         }
       );
+      track(child);
       let spawnError;
       child.on("error", (error) => {
         spawnError = error;
@@ -684,8 +752,8 @@ var MactopSource = class {
       child.on("exit", () => {
         if (this.child === child) this.child = void 0;
       });
-      this.attachStream(child);
-      const ready = await this.waitForReady(candidate, () => spawnError);
+      this.attachStream(child, generation);
+      const ready = await this.waitForReady(candidate, () => spawnError, startedAt);
       if (!ready) {
         debug("mactop not ready on port", candidate, spawnError?.message);
         child.kill();
@@ -709,15 +777,19 @@ var MactopSource = class {
     }
     this.failure = "mactop failed to start";
   }
-  attachStream(child) {
+  attachStream(child, generation) {
     child.stdout?.setEncoding("utf8");
+    child.stdout?.on("error", () => {
+    });
     child.stdout?.on("data", (chunk) => {
+      if (generation !== this.generation) return;
       for (const parsed of this.stream.push(chunk)) {
         this.latest = parsed;
+        this.latestAt = Date.now();
       }
     });
   }
-  async waitForReady(port, spawnError) {
+  async waitForReady(port, spawnError, startedAt) {
     const deadline = Date.now() + READY_TIMEOUT_MS;
     while (Date.now() < deadline) {
       if (this.stopped) return false;
@@ -726,7 +798,7 @@ var MactopSource = class {
         this.missing = true;
         return false;
       }
-      if (this.latest) return true;
+      if (this.latest && this.latestAt >= startedAt) return true;
       if (await this.probe(port)) return true;
       await sleep(120);
     }
@@ -738,6 +810,7 @@ var MactopSource = class {
 var GIGABYTE = 1024 ** 3;
 var KILOBYTE = 1024;
 var positive = (value) => value !== void 0 && value > 0 ? value : void 0;
+var percentage = (value) => value !== void 0 && Number.isFinite(value) && value >= 0 ? value : void 0;
 function createSampler(config, onSample) {
   const id = Math.random().toString(36).slice(2, 8);
   const [tick, setTick] = createSignal(0);
@@ -883,7 +956,7 @@ function createSampler(config, onSample) {
     const volume = extras ? bootVolume(extras) : void 0;
     return {
       at: Date.now(),
-      cpu: positive(metric(metrics, "mactop_cpu_usage_percent")) ?? 0,
+      cpu: percentage(metric(metrics, "mactop_cpu_usage_percent")),
       cpuTemp: positive(metric(metrics, "mactop_temp_sensor_celsius", {
         key: "TCDX"
       })) ?? positive(metric(metrics, "mactop_temp_sensor_celsius", {
@@ -894,7 +967,7 @@ function createSampler(config, onSample) {
       memPct: memTotal && memUsed && memTotal > 0 ? memUsed / memTotal * 100 : void 0,
       pressure: positive(metric(metrics, "mactop_memory_pressure_approx")),
       temp: socTemp,
-      gpu: positive(metric(metrics, "mactop_gpu_usage_percent")) ?? 0,
+      gpu: percentage(metric(metrics, "mactop_gpu_usage_percent")),
       gpuTemp: positive(metric(metrics, "mactop_gpu_temp_celsius")),
       power: positive(metric(metrics, "mactop_power_watts", {
         component: "total"
@@ -950,14 +1023,26 @@ function createSampler(config, onSample) {
     try {
       trace(`id=${id} pid=${process.pid} sampling subs=${subscribers} port=${config.port}`);
       const snapshot = await source.sample();
+      if (disposed) return;
       trace(`id=${id} snapshot=${snapshot ? Object.keys(snapshot).join("+") : "none"} sourceError=${source.error ?? "-"}`);
       if (!snapshot) {
         commit(fromOs(source.error));
         return;
       }
       const sample = snapshot.metrics ? fromMetrics(snapshot.metrics, snapshot.json) : fromJson(snapshot.json);
-      if (sample.memPct === void 0 && sample.cpuTemp === void 0) return;
+      if (sample.memPct === void 0 && sample.cpuTemp === void 0) {
+        commit({
+          ...sample,
+          error: source.error ?? "waiting for mactop metrics"
+        });
+        return;
+      }
       commit(sample);
+    } catch (error) {
+      trace(`id=${id} sample-error ${error instanceof Error ? error.message : String(error)}`);
+      if (!disposed) {
+        commit(fromOs(source.error ?? (error instanceof Error ? error.message : "sampler error")));
+      }
     } finally {
       sampling = false;
     }
@@ -971,8 +1056,10 @@ function createSampler(config, onSample) {
     if (timer || disposed) return;
     refreshSeed();
     seedTimer = setInterval(refreshSeed, 6e4);
-    void sampleOnce();
-    timer = setInterval(() => void sampleOnce(), config.intervalMs);
+    void sampleOnce().catch(() => {
+    });
+    timer = setInterval(() => void sampleOnce().catch(() => {
+    }), config.intervalMs);
   };
   const stop = () => {
     if (timer) clearInterval(timer);
@@ -983,10 +1070,10 @@ function createSampler(config, onSample) {
   const subscribe = () => {
     subscribers += 1;
     start();
-    let active = true;
+    let active2 = true;
     return () => {
-      if (!active) return;
-      active = false;
+      if (!active2) return;
+      active2 = false;
       subscribers -= 1;
       if (subscribers === 0) stop();
     };
@@ -1002,6 +1089,7 @@ function createSampler(config, onSample) {
       if (disposed) return;
       disposed = true;
       subscribers = 0;
+      seed = void 0;
       stop();
       source.stop();
     }
@@ -1009,11 +1097,14 @@ function createSampler(config, onSample) {
 }
 
 // .build/tui.js
+var active;
 var tui_default = {
   id: "local.system-stats",
   setup(ctx) {
     const config = loadConfig(ctx.options);
+    active?.dispose();
     const sampler = createSampler(config, () => ctx.renderer.requestRender());
+    active = sampler;
     ctx.ui.slot({
       append: "sidebar.content",
       render: () => _$createComponent2(StatsBoard, {
@@ -1024,7 +1115,10 @@ var tui_default = {
         config
       })
     });
-    return () => sampler.dispose();
+    return () => {
+      if (active === sampler) active = void 0;
+      sampler.dispose();
+    };
   }
 };
 export {

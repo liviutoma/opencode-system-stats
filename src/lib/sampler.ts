@@ -69,6 +69,10 @@ const KILOBYTE = 1024
 
 const positive = (value: number | undefined) => (value !== undefined && value > 0 ? value : undefined)
 
+/** Percent gauges may legitimately read 0 — only absence is "unknown". */
+const percentage = (value: number | undefined) =>
+    value !== undefined && Number.isFinite(value) && value >= 0 ? value : undefined
+
 export function createSampler(config: Config, onSample?: () => void) {
     // Distinguishes sampler instances in traces: several can exist if setup()
     // runs more than once or a hot reload leaves an old claim behind.
@@ -216,7 +220,7 @@ export function createSampler(config: Config, onSample?: () => void) {
         const volume = extras ? bootVolume(extras) : undefined
         return {
             at: Date.now(),
-            cpu: positive(metric(metrics, "mactop_cpu_usage_percent")) ?? 0,
+            cpu: percentage(metric(metrics, "mactop_cpu_usage_percent")),
             cpuTemp:
                 positive(metric(metrics, "mactop_temp_sensor_celsius", { key: "TCDX" })) ??
                 positive(metric(metrics, "mactop_temp_sensor_celsius", { key: "TCHP" })) ??
@@ -226,7 +230,7 @@ export function createSampler(config: Config, onSample?: () => void) {
             memPct: memTotal && memUsed && memTotal > 0 ? (memUsed / memTotal) * 100 : undefined,
             pressure: positive(metric(metrics, "mactop_memory_pressure_approx")),
             temp: socTemp,
-            gpu: positive(metric(metrics, "mactop_gpu_usage_percent")) ?? 0,
+            gpu: percentage(metric(metrics, "mactop_gpu_usage_percent")),
             gpuTemp: positive(metric(metrics, "mactop_gpu_temp_celsius")),
             power: positive(metric(metrics, "mactop_power_watts", { component: "total" })),
             netIn: netIn === undefined ? undefined : netIn * KILOBYTE,
@@ -288,6 +292,9 @@ export function createSampler(config: Config, onSample?: () => void) {
         try {
             trace(`id=${id} pid=${process.pid} sampling subs=${subscribers} port=${config.port}`)
             const snapshot = await source.sample()
+            // Teardown can happen while a scrape is in flight; committing then
+            // would touch a renderer that is already gone.
+            if (disposed) return
             trace(`id=${id} snapshot=${snapshot ? Object.keys(snapshot).join("+") : "none"} sourceError=${source.error ?? "-"}`)
             if (!snapshot) {
                 commit(fromOs(source.error))
@@ -297,9 +304,20 @@ export function createSampler(config: Config, onSample?: () => void) {
                 ? fromMetrics(snapshot.metrics, snapshot.json)
                 : fromJson(snapshot.json!)
             // mactop serves readings before its first sampling tick (all zeros,
-            // no memory) — keep "measuring…" instead of charting the warm-up.
-            if (sample.memPct === undefined && sample.cpuTemp === undefined) return
+            // no memory). Surface that as a state instead of an eternal spinner
+            // with no explanation.
+            if (sample.memPct === undefined && sample.cpuTemp === undefined) {
+                commit({ ...sample, error: source.error ?? "waiting for mactop metrics" })
+                return
+            }
             commit(sample)
+        } catch (error) {
+            // setInterval callbacks cannot surface rejections: an unhandled one
+            // takes down the host TUI. Degrade to the os fallback instead.
+            trace(`id=${id} sample-error ${error instanceof Error ? error.message : String(error)}`)
+            if (!disposed) {
+                commit(fromOs(source.error ?? (error instanceof Error ? error.message : "sampler error")))
+            }
         } finally {
             sampling = false
         }
@@ -315,8 +333,8 @@ export function createSampler(config: Config, onSample?: () => void) {
         if (timer || disposed) return
         refreshSeed()
         seedTimer = setInterval(refreshSeed, 60_000)
-        void sampleOnce()
-        timer = setInterval(() => void sampleOnce(), config.intervalMs)
+        void sampleOnce().catch(() => {})
+        timer = setInterval(() => void sampleOnce().catch(() => {}), config.intervalMs)
     }
 
     const stop = () => {
@@ -349,6 +367,7 @@ export function createSampler(config: Config, onSample?: () => void) {
             if (disposed) return
             disposed = true
             subscribers = 0
+            seed = undefined
             stop()
             source.stop()
         },

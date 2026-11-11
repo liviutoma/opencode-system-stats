@@ -228,8 +228,10 @@ export function StatsBoard(props: { theme: ResolvedTheme; sampler: Sampler; conf
                 <For each={props.config.rows}>
                     {(row) => <Row row={row} theme={props.theme} sampler={props.sampler} config={props.config} />}
                 </For>
-                <Show when={error()}>{(message) => <text fg={colors().warning}>{message()}</text>}</Show>
             </Show>
+            {/* Outside the ready branch: a failure that never yields a sample
+                must still explain itself instead of leaving a spinner. */}
+            <Show when={error()}>{(message) => <text fg={colors().warning}>{message()}</text>}</Show>
         </box>
     )
 }

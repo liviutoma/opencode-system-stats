@@ -4,7 +4,7 @@
  */
 
 import { readFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 export type Row = "cpu" | "cputemp" | "mem" | "temp" | "gpu" | "gputemp" | "pwr" | "net" | "disk"
@@ -44,11 +44,17 @@ function rows(value: unknown, fallback: Row[]): Row[] {
 
 function readFileConfig(): Record<string, unknown> {
     // `config.json` sits next to the built `tui.js`; during source-level
-    // development the module lives one directory deeper (`src/lib/`).
+    // development the module lives one directory deeper (`src/lib/`). Walking up
+    // unconditionally would let an unrelated config.json in the shared plugins
+    // directory (or ~/.config/opencode) silently override this plugin's port.
     const here = dirname(fileURLToPath(import.meta.url))
-    for (const directory of [here, dirname(here), dirname(dirname(here))]) {
+    const directories = basename(here) === "lib" ? [here, dirname(here), dirname(dirname(here))] : [here]
+    for (const directory of directories) {
         try {
-            return JSON.parse(readFileSync(join(directory, "config.json"), "utf8")) as Record<string, unknown>
+            const parsed: unknown = JSON.parse(readFileSync(join(directory, "config.json"), "utf8"))
+            if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+                return parsed as Record<string, unknown>
+            }
         } catch {
             continue
         }
